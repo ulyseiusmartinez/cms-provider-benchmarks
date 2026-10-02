@@ -1,0 +1,61 @@
+name: weekly-benchmark
+on:
+  schedule: [{cron: "0 11 * * 1"}]   # Mondays 11:00 UTC
+  workflow_dispatch: {}
+  push: {branches: [main]}
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_PASSWORD: postgres, POSTGRES_DB: cmsbench}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/cmsbench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  weekly-run:
+    # Only on the schedule / manual trigger.
+    if: github.event_name != 'push' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_PASSWORD: postgres, POSTGRES_DB: cmsbench}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/cmsbench
+      CMS_DATASETS: ${{ vars.CMS_DATASETS }}   # optional pin; empty = auto-discover latest 3 years
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      REPORT_FROM: ${{ secrets.REPORT_FROM }}
+      REPORT_TO: ${{ secrets.REPORT_TO }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Run pipeline on live CMS data (dataset ids auto-discovered)
+        run: PYTHONPATH=src python -m cmsbench.pipeline run --source api --email
+      # Reports and CSVs list individual NPIs in the outlier tables. Artifacts on a public repo can be
+      # downloaded by anyone signed in to GitHub, so they're only uploaded while the repo is private;
+      # the briefing is delivered by email either way.
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event.repository.private }}
+        with: {name: briefing, path: "reports/\npowerbi/"}
